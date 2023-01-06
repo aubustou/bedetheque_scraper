@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bedetheque-scraper"
+version = "0.0.1"
+description = "A scraper for bedetheque.com"
+requires-python = ">=3.11"
+dependencies = [
+		"xmlschema",
+		"requests",
+		"beautifulsoup4",
+		"xmltodict",
+]
+
+[tool.setuptools]
+packages = ["bedetheque_scraper"]
+
+[project.scripts]
+bedetheque-scraper = "bedetheque_scraper.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+		"pdbpp",
+		"black",
+		"isort",
+		"mypy",
+]
