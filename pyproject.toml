@@ -9,7 +9,7 @@ description = "A scraper for bedetheque.com"
 requires-python = ">=3.11"
 dependencies = [
 		"xmlschema",
-		"requests",
+		"requests[socks]",
 		"beautifulsoup4",
 		"xmltodict",
 ]
