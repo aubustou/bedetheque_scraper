@@ -5,7 +5,7 @@ import logging
 import re
 from dataclasses import InitVar, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 import requests
 import xmlschema
@@ -66,47 +66,136 @@ def remove_accents(raw_text: str) -> str:
     return raw_text
 
 
-def search_for_series(series_name: str, session: requests.Session) -> Serie | None:
+PREFIXES = [
+    "Les Aventures De",
+    "Les Aventures D'",
+    "Les Nouvelles Aventures De",
+    "Les Nouvelles Aventures D'",
+    "Une Aventure De",
+    "Une Aventure D'",
+]
+PREFIX_PATTERN = re.compile(f"^({'|'.join(PREFIXES)})\s", re.IGNORECASE)
+DETERMINERS = [
+    "Le",
+    "La",
+    "Les",
+    "L'",
+    "Un",
+    "Une",
+    "Des",
+    "Du",
+    "De",
+    "D'",
+    "The",
+    "A",
+    "An",
+]
+DETERMINER_PATTERN = re.compile(f"^({'|'.join(DETERMINERS)})\s", re.IGNORECASE)
+
+
+def revert_determiner(raw_text: str) -> str:
+    prefix = None
+
+    if match := PREFIX_PATTERN.match(raw_text):
+        prefix = match.group(1)
+    elif match := DETERMINER_PATTERN.match(raw_text):
+        prefix = match.group(1)
+
+    if prefix:
+        return f"""{raw_text.removeprefix(
+            prefix
+        ).strip()
+        } ({prefix.removesuffix(' ')})"""
+    else:
+        return raw_text
+
+
+def sanitize_series_name(series_name: str) -> str:
+    series_name = revert_determiner(series_name)
+
     if " " in series_name:
         series_to_find = series_name.split(" ")[0]
     else:
         series_to_find = series_name
 
     series_to_find = remove_accents(series_to_find)
+    return series_to_find
 
+
+def search_for_series(series_name: str, session: requests.Session) -> Serie | None:
+    series_to_find = sanitize_series_name(series_name)
     series = search_for_title(series_to_find, session)
 
-    found = next((x for x in series if x.title.lower() == series_name.lower()), None)
+    if found := next(
+        (x for x in series if x.title.lower() == series_name.lower()), None
+    ):
+        return found
 
-    if not found:
-        logging.warning("No serie found for %s", series_name)
+    logging.warning("No serie found for %s", series_name)
+    if series:
         logging.info("Found those series")
-        for serie in series:
-            if serie.title.startswith(series_name):
-                logging.info(serie.title)
+        for index, serie in enumerate(series, start=1):
+            logging.info("%d: %s", index, serie.title)
+        logging.info("%d: other", index + 1)
+    else:
+        index = 0
+        logging.info("No series found")
+        logging.info("%d: enter a name", index + 1)
 
-        series_name = input("Choose a serie")
-        if not series_name:
-            return None
+    logging.info("%d: quit", index + 2)
 
-        found = next((x for x in series if x.title.lower() == series_name.lower()), None)
+    choice = input("Choose a number")
+    if not choice.isdigit():
+        return None
 
-    return found
+    choice_ = int(choice)
+    if choice_ == index + 1:
+        series_name = input("Enter a name")
+        return search_for_series(series_name, session)
+    elif choice_ == index + 2:
+        return None
+    else:
+        return series[choice_ - 1]
+
+
+class SerieResult(TypedDict):
+    id: str
+    label: str
+    value: str
+    desc: str
+
+
+[
+    {
+        "id": "74809",
+        "label": "Canardo (Uma investiga\u00e7\u00e3o do inspector)",
+        "value": "Canardo (Uma investiga\u00e7\u00e3o do inspector)",
+        "desc": "skin\/flags\/Portugal.png",
+    },
+    {
+        "id": "401",
+        "label": "Canardo (Une enqu\u00eate de l'inspecteur)",
+        "value": "Canardo (Une enqu\u00eate de l'inspecteur)",
+        "desc": "skin\/flags\/France.png",
+    },
+]
 
 
 def search_for_title(title: str, session: requests.Session) -> list[Serie]:
     """Search for a title on Bedetheque.com"""
 
-    url = f"https://www.bedetheque.com/bandes_dessinees_{title.lower()}.html"
-    soup = get_soup(url, session)
-    list_results = soup.find("div", class_="widget-magazine")
-    if not list_results:
+    url = f"https://online.bdgest.com/ajax/series?term={title}"
+    content: list[SerieResult] = session.get(url).json()
+    if not content:
         return []
-
-    if results := list_results.find_all("li"):
-        return [Serie(x.find("a").text.strip(), x.find("a")["href"]) for x in results]
     else:
-        return []
+        return [
+            Serie(
+                title=x["label"],
+                url=f"https://www.bedetheque.com//serie/index/s/{x['id']}",
+            )
+            for x in content
+        ]
 
 
 def get_albums(serie: Serie, session: requests.Session) -> list[Album]:
@@ -114,7 +203,7 @@ def get_albums(serie: Serie, session: requests.Session) -> list[Album]:
     soup = get_soup(serie.url, session)
 
     genre = ""
-    if genre_block  := soup.find("ul", class_="serie-info"):
+    if genre_block := soup.find("ul", class_="serie-info"):
         for line in genre_block.find_all("li"):
             if (label := line.find("label")) and label.text.strip() == "Genre :":
                 genre = line.find("span").text.strip()
@@ -197,6 +286,9 @@ class Author:
             self.name = found_name
 
 
+DEPOT_LEGAL_BLOCK_PATTERN = re.compile(
+    r"Dépot légal : (?P<month>\d\d)\/(?P<year>\d\d\d\d)"
+)
 RELEASE_DATE_PATTERN = re.compile(
     r"\(Parution le (?P<day>\d+)/(?P<month>\d+)/(?P<year>\d+)\)"
 )
@@ -363,10 +455,14 @@ class Album(ToDictMixin):
 
     def get_release_date(self, info: BeautifulSoup):
         """Get the release date of an album"""
+
         if (block := info.find("span")) and (
             match := RELEASE_DATE_PATTERN.match(block.text.strip())
         ):
             self.day = int(match.group("day"))
+            self.month = int(match.group("month"))
+            self.year = int(match.group("year"))
+        elif match := DEPOT_LEGAL_BLOCK_PATTERN.match(info.text.strip()):
             self.month = int(match.group("month"))
             self.year = int(match.group("year"))
 
@@ -421,7 +517,7 @@ def scrape(title: str, numbers: list[str] | None = None) -> list[Album]:
         logging.info(albums)
 
         if numbers:
-            albums = [x for x in albums if x.number in numbers]
+            albums = [x for x in albums if str(x.number).lower() in numbers]
 
         for album in albums:
             info = get_album_info(album, session)
@@ -429,12 +525,11 @@ def scrape(title: str, numbers: list[str] | None = None) -> list[Album]:
                 logging.error("No info found")
                 continue
             infos.append(info)
+            logging.info("Found info for %s", album)
 
             for field_ in fields(info):
                 if field_.metadata.get("not_included"):
                     continue
-                logging.debug(f"{field_.name}: {getattr(album, field_.name)}")
+                logging.debug("%s: %s", field_.name, getattr(info, field_.name))
 
     return infos
-
-

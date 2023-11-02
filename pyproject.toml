@@ -12,6 +12,8 @@ dependencies = [
 		"requests[socks]",
 		"beautifulsoup4",
 		"xmltodict",
+		"send2trash",
+		"openai",
 ]
 
 [tool.setuptools]

@@ -8,7 +8,9 @@ from dataclasses import InitVar, dataclass, field
 import logging
 
 
-def recurse_find_cbz(path: Path, exclude_comicinfo: bool=False) -> list[Path]:
+def recurse_find_cbz(
+    path: Path, exclude_comicinfo: bool = False, accept_zip: bool = False
+) -> list[Path]:
     """Recursively find all cbz files in a directory and its subdirectories.
 
     Args:
@@ -17,11 +19,15 @@ def recurse_find_cbz(path: Path, exclude_comicinfo: bool=False) -> list[Path]:
     Returns:
         list[Path]: A list of all cbz files found.
     """
-    cbz_files = []
+    accepted_extensions = {".cbz"}
+    if accept_zip:
+        accepted_extensions.add(".zip")
+
+    cbz_files: list[Path] = []
     for file in path.iterdir():
         if file.is_dir():
-            cbz_files.extend(recurse_find_cbz(file, exclude_comicinfo))
-        elif file.suffix == ".cbz":
+            cbz_files.extend(recurse_find_cbz(file, exclude_comicinfo, accept_zip))
+        elif file.suffix.lower() in accepted_extensions:
             try:
                 with ZipFile(file, "r") as zip_:  # type: ignore
                     if exclude_comicinfo and "ComicInfo.xml" in zip_.namelist():
@@ -53,6 +59,7 @@ NUMBER_PATTERNS = [
     re.compile(r"( -\s*(\d+)\s*-)"),
 ]
 
+ALREADY_FORMATTED_PATTERN = re.compile(r"(.*) #\d+.*")
 TITLE_PATTERNS = [
     re.compile(r"/?([a-zA-Z][\w '&.-]+)"),
 ]
@@ -70,7 +77,8 @@ class BDFile:
     file_extension: str = field(default="", init=False)
 
     number: str | None = field(default=None, init=False)
-    title: str = field(default="", init=False)
+    ai_suggested_title: str = field(default="", init=False)
+    regex_suggested_title: str = field(default="", init=False)
 
     found_number: str = field(default="", init=False)
 
@@ -84,11 +92,15 @@ class BDFile:
         self.get_number()
         self.get_title()
 
+    @property
+    def title(self) -> str:
+        return self.ai_suggested_title or self.regex_suggested_title
+
     def __repr__(self) -> str:
-        if self.number:
-            return f"{self.title} - {self.number}"
+        if self.number is not None:
+            return f"{self.title} - {self.number} ({self.file_name})"
         else:
-            return self.title
+            return f"{self.title} ({self.file_name})"
 
     def get_number(self):
         """Get the number from the file name.
@@ -120,6 +132,10 @@ class BDFile:
         Returns:
             str: The title from the file name.
         """
+        if match := ALREADY_FORMATTED_PATTERN.search(self.file_name):
+            self.regex_suggested_title = match.group(1)
+            return
+
         for name in [self.file_name, *self.parents]:
             if self.found_number:
                 name = name.split(self.found_number)[0].strip()
@@ -134,11 +150,13 @@ class BDFile:
 
             for pattern in TITLE_PATTERNS:
                 if match := pattern.search(name):
-                    self.title = match.group(1)
+                    self.regex_suggested_title = match.group(1)
                     return
 
 
-def get_titles(path: Path, exclude_comicinfo: bool = True) -> list[BDFile]:
+def get_titles(
+    path: Path, exclude_comicinfo: bool = True, accept_zip: bool = False
+) -> list[BDFile]:
     """Get the titles of all cbz files in a directory and its subdirectories.
 
     Args:
@@ -150,7 +168,7 @@ def get_titles(path: Path, exclude_comicinfo: bool = True) -> list[BDFile]:
     locale.setlocale(locale.LC_ALL, "fr_FR.UTF-8")
 
     titles = []
-    for file in recurse_find_cbz(path, exclude_comicinfo):
+    for file in recurse_find_cbz(path, exclude_comicinfo, accept_zip=accept_zip):
         title = BDFile(file, root=path)
         titles.append(title)
     return titles
